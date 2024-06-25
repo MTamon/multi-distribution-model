@@ -42,7 +42,6 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(input_size, hidden1_size)
         self.fc2 = nn.Linear(hidden1_size, hidden2_size)
         self.fc3 = nn.Linear(hidden2_size, output_size * distribution_num)
-        self.softmax = nn.Softmax(dim=1)
 
         self.distribution_num = distribution_num
 
@@ -55,12 +54,11 @@ class Net(nn.Module):
         z1 = F.relu(self.fc1(x))
         z2 = F.relu(self.fc2(z1))
         logit = self.fc3(z2)
-        y = self.softmax(logit)
 
         if self.distribution_num > 1:
-            y = self.reduct_distribution(y)
+            logit = self.reduct_distribution(logit)
 
-        return y
+        return logit
 
 
 Input_size = 28 * 28
@@ -162,7 +160,7 @@ def lerning(model, train_loader, test_loader, criterion, optimizer, num_epochs, 
     return train_loss_list, test_loss_list
 
 
-Num_epochs = 15
+Num_epochs = 20
 Train_loss_list1, Test_loss_list1 = lerning(
     Model1, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
 )

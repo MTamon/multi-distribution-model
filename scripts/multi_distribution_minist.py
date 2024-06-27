@@ -71,6 +71,10 @@ Model1 = Net(Input_size, Hidden1_size, Hidden2_size, Output_size).to(Device)
 print(Model1)
 Model2 = Net(Input_size, Hidden1_size, Hidden2_size, Output_size, distribution_num=3).to(Device)
 print(Model2)
+Model3 = Net(Input_size, Hidden1_size, Hidden2_size + 2, Output_size, distribution_num=1).to(Device)
+print(Model3)
+Model4 = Net(Input_size, Hidden1_size, Hidden2_size, Output_size, distribution_num=5).to(Device)
+print(Model4)
 
 # 損失関数　criterion：基準
 # CrossEntropyLoss：交差エントロピー誤差関数
@@ -160,14 +164,21 @@ def lerning(model, train_loader, test_loader, criterion, optimizer, num_epochs, 
     return train_loss_list, test_loss_list
 
 
-Num_epochs = 20
+Num_epochs = 30
 Train_loss_list1, Test_loss_list1 = lerning(
     Model1, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
 )
 Train_loss_list2, Test_loss_list2 = lerning(
     Model2, Train_loader, Test_loader, Criterion, Optimizer2, Num_epochs, device=Device
 )
+Train_loss_list3, Test_loss_list3 = lerning(
+    Model3, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
+)
+Train_loss_list4, Test_loss_list4 = lerning(
+    Model4, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
+)
 
+# 1 vs 2
 plt.plot(range(len(Train_loss_list1)), Train_loss_list1, c="b", label="train loss")
 plt.plot(range(len(Test_loss_list1)), Test_loss_list1, c="r", label="test loss")
 plt.plot(range(len(Train_loss_list2)), Train_loss_list2, c="g", label="train loss (mdist)")
@@ -176,4 +187,29 @@ plt.xlabel("epoch")
 plt.ylabel("loss")
 plt.legend()
 plt.grid()
-plt.savefig("multi_distribution_minist.png")
+plt.savefig("multi_distribution_minist1vs2.png")
+plt.close()
+
+# 3 vs 2
+plt.plot(range(len(Train_loss_list3)), Train_loss_list3, c="b", label="train loss")
+plt.plot(range(len(Test_loss_list3)), Test_loss_list3, c="r", label="test loss")
+plt.plot(range(len(Train_loss_list2)), Train_loss_list2, c="g", label="train loss (mdist)")
+plt.plot(range(len(Test_loss_list2)), Test_loss_list2, c="y", label="test loss (mdist)")
+plt.xlabel("epoch")
+plt.ylabel("loss")
+plt.legend()
+plt.grid()
+plt.savefig("multi_distribution_minist3vs2.png")
+plt.close()
+
+# 4 vs 2
+plt.plot(range(len(Train_loss_list4)), Train_loss_list4, c="b", label="train loss")
+plt.plot(range(len(Test_loss_list4)), Test_loss_list4, c="r", label="test loss")
+plt.plot(range(len(Train_loss_list2)), Train_loss_list2, c="g", label="train loss (mdist)")
+plt.plot(range(len(Test_loss_list2)), Test_loss_list2, c="y", label="test loss (mdist)")
+plt.xlabel("epoch")
+plt.ylabel("loss")
+plt.legend()
+plt.grid()
+plt.savefig("multi_distribution_minist4vs2.png")
+plt.close()

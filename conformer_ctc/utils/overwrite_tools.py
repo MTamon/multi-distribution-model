@@ -1,35 +1,32 @@
-# from nemo.core.optim.lr_scheduler import
-# from typing import Callable, Optional, Any
 from typing import Callable
 
-# from typing_extensions import OrderedDict
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.core.classes.mixins import AccessMixin
 
-# import nemo.core.classes
-# from nemo.utils import logging
-# from nemo.utils.get_rank import get_rank
 from omegaconf import DictConfig
-
-# import pytorch_lightning.loops.utilities
 from pytorch_lightning import Trainer
 
-# from pytorch_lightning.loops.fit_loop import _FitLoop, log
-
-# import pytorch_lightning.loops.optimization.optimizer_loop
-# from pytorch_lightning.loops.optimization.optimizer_loop import (
-#     OptimizerLoop,
-#     ClosureResult,
-# )
-# from pytorch_lightning.trainer.supporters import CombinedLoader
-# from pytorch_lightning.loops.utilities import _set_sampler_epoch
-# from pytorch_lightning.utilities.types import STEP_OUTPUT
-# from pytorch_lightning.utilities.exceptions import MisconfigurationException
-# from pytorch_lightning.utilities.memory import recursive_detach
-import torch
 from torch.optim.lr_scheduler import _LRScheduler
+
+from collections import OrderedDict
+
+import torch
+import torch.distributed
+
+from nemo.collections.asr.parts.submodules.jasper import init_weights
+from nemo.collections.asr.parts.utils import adapter_utils
+from nemo.core.classes.common import typecheck
+from nemo.core.classes.exportable import Exportable
+from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.classes.module import NeuralModule
+from nemo.core.neural_types import (
+    AcousticEncodedRepresentation,
+    LogprobsType,
+    NeuralType,
+)
+from nemo.utils import logging
 
 
 class MyEncDecRNNTModel(EncDecRNNTModel):
@@ -165,49 +162,6 @@ class FastEncDecRNNTModel(EncDecRNNTModel):
         return {"loss": loss_value}
 
 
-# class SaveMemFitLoop(_FitLoop):
-#     def __init__(
-#         self,
-#         min_epochs: Optional[int] = 0,
-#         max_epochs: Optional[int] = None,
-#     ) -> None:
-#         super().__init__(min_epochs, max_epochs)
-
-#     # fit_loop.py: 221
-#     def on_advance_start(self) -> None:
-#         """Prepares the dataloader for training and calls the hook ``on_train_epoch_start``"""
-#         model = self.trainer.lightning_module
-
-#         # reset train dataloader
-#         if not self._is_fresh_start_epoch and self.trainer._data_connector._should_reload_train_dl:
-#             log.detail(f"{self.__class__.__name__}: resetting train dataloader")
-#             self.trainer.reset_train_dataloader(model)
-#         self._is_fresh_start_epoch = False
-
-#         # reset outputs here instead of in `reset` as they are not accumulated between epochs
-#         del self._outputs
-#         self._outputs = []
-
-#         if self.trainer.train_dataloader is not None:
-#             assert isinstance(self.trainer.train_dataloader, CombinedLoader)
-#             _set_sampler_epoch(self.trainer.train_dataloader, self.epoch_progress.current.processed)
-
-#         # changing gradient according accumulation_scheduler
-#         self.trainer.accumulation_scheduler.on_train_epoch_start(self.trainer, self.trainer.lightning_module)
-
-#         # stores accumulated grad fractions per batch
-#         self.epoch_loop.batch_loop.accumulated_loss.reset(window_length=self.trainer.accumulate_grad_batches)
-
-#         self.epoch_progress.increment_ready()
-
-#         self.trainer._logger_connector.on_epoch_start()
-
-#         self.trainer._call_callback_hooks("on_train_epoch_start")
-#         self.trainer._call_lightning_module_hook("on_train_epoch_start")
-
-#         self.epoch_progress.increment_started()
-
-
 class FastEncDecCTCModel(EncDecCTCModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         super().__init__(cfg, trainer)
@@ -281,85 +235,121 @@ class FastEncDecCTCModel(EncDecCTCModel):
         return {"loss": loss_value, "log": tensorboard_logs}
 
 
-# class SaveMemOptimizerLoop(OptimizerLoop):
-#     def __init__(self) -> None:
-#         super().__init__()
+class ConvASRDecoderMDIST(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin):
+    """Simple ASR Decoder for use with CTC-based models such as JasperNet and QuartzNet
 
-#     def _training_step(self, kwargs: OrderedDict) -> ClosureResult:
-#         """Performs the actual train step with the tied hooks.
+    Based on these papers:
+       https://arxiv.org/pdf/1904.03288.pdf
+       https://arxiv.org/pdf/1910.10261.pdf
+       https://arxiv.org/pdf/2005.04290.pdf
+    """
 
-#         Args:
-#             kwargs: the kwargs passed down to the hooks.
+    @property
+    def input_types(self):
+        return OrderedDict({"encoder_output": NeuralType(("B", "D", "T"), AcousticEncodedRepresentation())})
 
-#         Returns:
-#             A ``ClosureResult`` containing the training step output.
-#         """
-#         # manually capture logged metrics
-#         training_step_output = self.trainer._call_strategy_hook("training_step", *kwargs.values())
-#         self.trainer.strategy.post_training_step()
+    @property
+    def output_types(self):
+        return OrderedDict({"logprobs": NeuralType(("B", "T", "D"), LogprobsType())})
 
-#         model_output = self.trainer._call_lightning_module_hook("training_step_end", training_step_output)
-#         strategy_output = self.trainer._call_strategy_hook("training_step_end", training_step_output)
-#         training_step_output = strategy_output if model_output is None else model_output
+    def reduct_distribution(self, x: torch.Tensor):
+        # x: [B, T, C]
+        assert x.dim() == 3, f"Expected 3D tensor, got {x.dim()} ({x.shape})"
+        batch_size, num_classes, seq_len = x.shape
+        assert (
+            num_classes == self._num_classes * self.distribution_num
+        ), f"Expected {self._num_classes * self.distribution_num}, got {num_classes}"
 
-#         del self._hiddens
-#         self._hiddens = _extract_hiddens(training_step_output, self.trainer.lightning_module.truncated_bptt_steps)
+        x = x.view(batch_size, self._num_classes, self.distribution_num, seq_len)
+        x = torch.sum(x, dim=2)
+        return x
 
-#         result = self.output_result_cls.from_training_step_output(
-#             training_step_output, self.trainer.accumulate_grad_batches
-#         )
+    def __init__(self, feat_in, num_classes, init_mode="xavier_uniform", vocabulary=None, distribution_num=1):
+        super().__init__()
 
-#         if self.trainer.move_metrics_to_cpu:
-#             # hiddens and the training step output are not moved as they are not considered "metrics"
-#             assert self.trainer._results is not None
-#             self.trainer._results.cpu()
+        if vocabulary is None and num_classes < 0:
+            raise ValueError(f"Neither of the vocabulary and num_classes are set! At least one of them need to be set.")
 
-#         return result
+        if num_classes <= 0:
+            num_classes = len(vocabulary)
+            logging.info(f"num_classes of ConvASRDecoder is set to the size of the vocabulary: {num_classes}.")
 
+        if vocabulary is not None:
+            if num_classes != len(vocabulary):
+                raise ValueError(
+                    f"If vocabulary is specified, it's length should be equal to the num_classes. Instead got: num_classes={num_classes} and len(vocabulary)={len(vocabulary)}"
+                )
+            self.__vocabulary = vocabulary
+        self._feat_in = feat_in
+        # Add 1 for blank char
+        self._num_classes = num_classes + 1
 
-# class SaveMemModelPT(nemo.core.classes.ModelPT):
-#     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-#         super().__init__(cfg, trainer)
+        # 変更箇所
+        self.distribution_num = distribution_num
+        self.output_size = self._num_classes * self.distribution_num
+        # kernel_size=1 なので実質的にはLinear層
+        self.decoder_layers = torch.nn.Sequential(
+            torch.nn.Conv1d(self._feat_in, self.output_size, kernel_size=1, bias=True)
+        )
+        # 上手く行かなければ、softmax 後に reduct_distribution を適用してみる
+        self.apply(lambda x: init_weights(x, mode=init_mode))
 
-#     def on_train_batch_end(self, outputs, batch: Any, batch_idx: int, unused: int = 0) -> None:
-#         """PyTorch Lightning hook:
-#         https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
-#         We use it here to enable nsys profiling.
-#         """
+        accepted_adapters = [adapter_utils.LINEAR_ADAPTER_CLASSPATH]
+        self.set_accepted_adapter_types(accepted_adapters)
 
-#         if self.device.type == "cuda":
-#             if hasattr(self, "_nsys_profile_enabled"):
-#                 if self._nsys_profile_enabled:
-#                     if batch_idx == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
-#                         logging.info("====== End nsys profiling ======")
-#                         torch.cuda.cudart().cudaProfilerStop()
-#         del outputs
-#         del batch
+        # to change, requires running ``model.temperature = T`` explicitly
+        self.temperature = 1.0
 
+    @typecheck()
+    def forward(self, encoder_output):
+        # Adapter module forward step
+        if self.is_adapter_available():
+            encoder_output = encoder_output.transpose(1, 2)  # [B, T, C]
+            encoder_output = self.forward_enabled_adapters(encoder_output)
+            encoder_output = encoder_output.transpose(1, 2)  # [B, C, T]
 
-# def _extract_hiddens(training_step_output: STEP_OUTPUT, truncated_bptt_steps: int) -> Optional[Any]:
-#     """Get the hidden state if present from the training step output.
+        if self.temperature != 1.0:
+            return torch.nn.functional.log_softmax(
+                self.reduct_distribution(self.decoder_layers(encoder_output)).transpose(1, 2) / self.temperature, dim=-1
+            )
+        return torch.nn.functional.log_softmax(
+            self.reduct_distribution(self.decoder_layers(encoder_output)).transpose(1, 2), dim=-1
+        )
 
-#     Raises:
-#         MisconfigurationException: If :attr:`~pytorch_lightning.core.Lightning.LightningModule.truncated_bptt_steps` is
-#             not enabled and hiddens are returned or vice versa.
-#     """
-#     if not truncated_bptt_steps:
-#         if isinstance(training_step_output, dict) and "hiddens" in training_step_output:
-#             raise MisconfigurationException(
-#                 'You returned "hiddens" in your `training_step` but `truncated_bptt_steps` is disabled'
-#             )
-#         return None
-#     if not isinstance(training_step_output, dict) or "hiddens" not in training_step_output:
-#         raise MisconfigurationException(
-#             'You enabled `truncated_bptt_steps` but did not `return {..., "hiddens": ...}` in your `training_step`'
-#         )
-#     # detach hiddens to avoid `RuntimeError: Trying to backward through the graph a second time`
-#     hiddens = recursive_detach(training_step_output["hiddens"], to_cpu=True)
-#     return hiddens
+    def input_example(self, max_batch=1, max_dim=256):
+        """
+        Generates input examples for tracing etc.
+        Returns:
+            A tuple of input examples.
+        """
+        input_example = torch.randn(max_batch, self._feat_in, max_dim).to(next(self.parameters()).device)
+        return tuple([input_example])
 
+    def _prepare_for_export(self, **kwargs):
+        m_count = 0
+        for m in self.modules():
+            if type(m).__name__ == "MaskedConv1d":
+                m.use_mask = False
+                m_count += 1
+        if m_count > 0:
+            logging.warning(f"Turned off {m_count} masked convolutions")
+        Exportable._prepare_for_export(self, **kwargs)
 
-# def overwrite_save_gpu_memory():
-#     pytorch_lightning.loops.utilities._extract_hiddens = _extract_hiddens
-#     pytorch_lightning.loops.optimization.optimizer_loop.OptimizerLoop = SaveMemOptimizerLoop
-#     nemo.core.classes.ModelPT = SaveMemModelPT
+    # Adapter method overrides
+    def add_adapter(self, name: str, cfg: DictConfig):
+        # Update the config with correct input dim
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        # Add the adapter
+        super().add_adapter(name=name, cfg=cfg)
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self._feat_in)
+        return cfg
+
+    @property
+    def vocabulary(self):
+        return self.__vocabulary
+
+    @property
+    def num_classes_with_blank(self):
+        return self._num_classes

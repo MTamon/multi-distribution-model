@@ -78,8 +78,9 @@ from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
-from utils.overwrite_tools import FastEncDecCTCModel
+from utils.overwrite_tools import FastEncDecCTCModel, ConvASRDecoderMDIST
 from utils.manifest import get_ds_tokens
+import nemo.collections.asr.modules
 
 
 def load_vocab(vocab_path):
@@ -94,6 +95,9 @@ def load_vocab(vocab_path):
 @hydra_runner(config_path="./", config_name="conformer_ctc_char.yaml")
 def main(cfg):
     logging.info(f"Hydra config: {OmegaConf.to_yaml(cfg)}")
+
+    # Override the ASR decoder to use the multi-distribution decoder
+    nemo.collections.asr.modules.ConvASRDecoder = ConvASRDecoderMDIST
 
     if cfg.vocab is None:
         tokens = sorted(list(get_ds_tokens(cfg)))
@@ -115,9 +119,7 @@ def main(cfg):
 
     if cfg.mode == "Finetune":
         if cfg.nemo_path.rsplit(".", 1)[-1] == "nemo":
-            model_ckpt = FastEncDecCTCModel.extract_state_dict_from(
-                cfg.nemo_path, cfg.exp_dir
-            )
+            model_ckpt = FastEncDecCTCModel.extract_state_dict_from(cfg.nemo_path, cfg.exp_dir)
             asr_model.load_state_dict(model_ckpt)
             del model_ckpt
         elif cfg.nemo_path.rsplit(".", 1)[-1] == "ckpt":
@@ -135,10 +137,7 @@ def main(cfg):
 
     trainer.fit(asr_model)
 
-    if (
-        hasattr(cfg.model, "test_ds")
-        and cfg.model.test_ds.manifest_filepath is not None
-    ):
+    if hasattr(cfg.model, "test_ds") and cfg.model.test_ds.manifest_filepath is not None:
         if asr_model.prepare_test(trainer):
             trainer.test(asr_model)
 

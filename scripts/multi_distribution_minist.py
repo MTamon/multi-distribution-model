@@ -84,6 +84,8 @@ Criterion = nn.CrossEntropyLoss()
 # SGD：確率的勾配降下法
 Optimizer1 = optim.SGD(Model1.parameters(), lr=0.01)
 Optimizer2 = optim.SGD(Model2.parameters(), lr=0.01)
+Optimizer3 = optim.SGD(Model3.parameters(), lr=0.01)
+Optimizer4 = optim.SGD(Model4.parameters(), lr=0.01)
 
 
 def train_model(model, train_loader, criterion, optimizer, device="cpu"):
@@ -172,10 +174,10 @@ Train_loss_list2, Test_loss_list2 = lerning(
     Model2, Train_loader, Test_loader, Criterion, Optimizer2, Num_epochs, device=Device
 )
 Train_loss_list3, Test_loss_list3 = lerning(
-    Model3, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
+    Model3, Train_loader, Test_loader, Criterion, Optimizer3, Num_epochs, device=Device
 )
 Train_loss_list4, Test_loss_list4 = lerning(
-    Model4, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
+    Model4, Train_loader, Test_loader, Criterion, Optimizer4, Num_epochs, device=Device
 )
 
 # 1 vs 2

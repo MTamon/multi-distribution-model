@@ -6,8 +6,6 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 
-from matplotlib import pyplot as plt
-
 
 def setup_all_seed(seed=0):
     # numpyに関係する乱数シードの設定

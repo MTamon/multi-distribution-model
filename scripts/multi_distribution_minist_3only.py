@@ -36,31 +36,27 @@ Train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=Bat
 Test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=Batch_size, shuffle=True)
 
 
-class NetMid(nn.Module):
+class Net(nn.Module):
     def __init__(self, input_size, hidden1_size, hidden2_size, output_size, distribution_num=1):
-        super(NetMid, self).__init__()
+        super(Net, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden1_size)
-        self.fc2 = nn.Linear(hidden1_size, hidden2_size * distribution_num)
-        self.fc3 = nn.Linear(hidden2_size, output_size)
+        self.fc2 = nn.Linear(hidden1_size, hidden2_size)
+        self.fc3 = nn.Linear(hidden2_size, output_size * distribution_num)
 
-        self.hidden2_size = hidden2_size
         self.distribution_num = distribution_num
 
     def reduct_distribution(self, x: torch.Tensor):
-        x = x.view(-1, self.distribution_num, self.hidden2_size)
+        x = x.view(-1, self.distribution_num, 10)
         x = torch.sum(x, dim=1)
         return x
 
     def forward(self, x):  # x : 入力
         z1 = F.relu(self.fc1(x))
+        z2 = F.relu(self.fc2(z1))
+        logit = self.fc3(z2)
 
         if self.distribution_num > 1:
-            z2 = self.reduct_distribution(self.fc2(z1))
-            z2 = F.relu(z2)
-        else:
-            z2 = F.relu(self.fc2(z1))
-
-        logit = self.fc3(z2)
+            logit = self.reduct_distribution(logit)
 
         return logit
 
@@ -71,9 +67,7 @@ Hidden2_size = 512
 Output_size = 10
 
 Device = "cuda" if torch.cuda.is_available() else "cpu"
-Model1 = NetMid(Input_size, Hidden1_size, Hidden2_size * 3, Output_size).to(Device)
-print(Model1)
-Model2 = NetMid(Input_size, Hidden1_size, Hidden2_size, Output_size, distribution_num=3).to(Device)
+Model2 = Net(Input_size, Hidden1_size, Hidden2_size, Output_size, distribution_num=3).to(Device)
 print(Model2)
 
 # 損失関数　criterion：基準
@@ -82,7 +76,6 @@ Criterion = nn.CrossEntropyLoss()
 
 # 最適化法の指定　optimizer：最適化
 # SGD：確率的勾配降下法
-Optimizer1 = optim.SGD(Model1.parameters(), lr=0.01)
 Optimizer2 = optim.SGD(Model2.parameters(), lr=0.01)
 
 
@@ -165,21 +158,9 @@ def lerning(model, train_loader, test_loader, criterion, optimizer, num_epochs, 
 
 
 Num_epochs = 30
-Train_loss_list1, Test_loss_list1 = lerning(
-    Model1, Train_loader, Test_loader, Criterion, Optimizer1, Num_epochs, device=Device
-)
 Train_loss_list2, Test_loss_list2 = lerning(
     Model2, Train_loader, Test_loader, Criterion, Optimizer2, Num_epochs, device=Device
 )
 
-# 1 vs 2
-plt.plot(range(len(Train_loss_list1)), Train_loss_list1, c="b", label="train loss")
-plt.plot(range(len(Test_loss_list1)), Test_loss_list1, c="r", label="test loss")
-plt.plot(range(len(Train_loss_list2)), Train_loss_list2, c="g", label="train loss (mdist)")
-plt.plot(range(len(Test_loss_list2)), Test_loss_list2, c="y", label="test loss (mdist)")
-plt.xlabel("epoch")
-plt.ylabel("loss")
-plt.legend()
-plt.grid()
-plt.savefig("multi_distribution_minist1vs2_MID.png")
-plt.close()
+# モデルの保存
+torch.save(Model2.state_dict(), "Model3Dist.pth")

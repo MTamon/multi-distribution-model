@@ -4,7 +4,7 @@ TESTS_MANIFEST=/mnt/t4/nemo/ASJ_PRETRAINED/manifest/train_dev/train_dev_manifest
 VOCAB_PATH=./asj_exp/pretrain/vocab_CTC.txt
 NEMO_PATH=./models/confCTC_BEST.nemo
 EXP_DIR=./asj_exp/pretrain
-NAME="cradle-01"
+NAME="cradle-02-D1D"
 
 python conformer_ctc/speech_to_text_ctc.py \
     --config-path=./ --config-name=conformer_ctc_char.yaml \

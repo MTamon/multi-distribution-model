@@ -15,7 +15,7 @@ lr: 3.0
 warmup_steps: 10000
 num_workers: 16
 
-distribution_num: 5
+distribution_num: 10
 
 model:
   sample_rate: 16000
